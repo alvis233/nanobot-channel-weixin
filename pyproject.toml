@@ -1,0 +1,43 @@
+[project]
+name = "nanobot-channel-weixin"
+version = "0.1.0"
+description = "Personal WeChat channel plugin for nanobot (via iLink Bot API)"
+license = {text = "MIT"}
+requires-python = ">=3.11"
+readme = "README.md"
+authors = [
+    {name = "alvis233"},
+]
+keywords = ["nanobot", "wechat", "weixin", "chatbot", "channel-plugin"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Communications :: Chat",
+]
+
+[project.urls]
+Homepage = "https://github.com/alvis233/nanobot-channel-weixin"
+Repository = "https://github.com/alvis233/nanobot-channel-weixin"
+Issues = "https://github.com/alvis233/nanobot-channel-weixin/issues"
+
+dependencies = [
+    "nanobot-ai",
+    "httpx>=0.28.0",
+    "cryptography>=44.0.0",
+    "qrcode>=8.0",
+]
+
+[project.entry-points."nanobot.channels"]
+weixin = "nanobot_channel_weixin:WeixinChannel"
+
+[project.scripts]
+nanobot-weixin = "nanobot_channel_weixin.cli:main"
+
+[build-system]
+requires = ["setuptools>=68.0"]
+build-backend = "setuptools.build_meta"
