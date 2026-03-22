@@ -19,7 +19,9 @@ from nanobot_channel_weixin.api import (
     DEFAULT_BASE_URL,
     download_cdn_media,
     get_updates,
+    send_media_message,
     send_message,
+    upload_cdn_file,
 )
 from nanobot_channel_weixin.auth import (
     AccountData,
@@ -67,7 +69,12 @@ def _strip_markdown(text: str) -> str:
 
 
 def _media_dir() -> str:
-    """Resolve the weixin media directory (works with or without nanobot config)."""
+    """Resolve the weixin media directory.
+
+    Uses nanobot's configured media path (~/.nanobot/media/weixin/) when running
+    inside the gateway. Falls back to /tmp/nanobot/media/weixin/ when nanobot
+    config is unavailable (e.g. standalone CLI testing).
+    """
     try:
         from nanobot.config.paths import get_media_dir
         return str(get_media_dir("weixin"))
@@ -131,13 +138,9 @@ class WeixinChannel(BaseChannel):
         logger.info("WeChat channel stopped")
 
     async def send(self, msg: OutboundMessage) -> None:
-        """Send a reply back through WeChat."""
+        """Send a reply back through WeChat (text and/or media)."""
         if not self._account or not self._account.configured:
             logger.warning("WeChat: cannot send, account not configured")
-            return
-
-        text = _strip_markdown(msg.content.strip())
-        if not text:
             return
 
         to = msg.chat_id
@@ -146,22 +149,94 @@ class WeixinChannel(BaseChannel):
             logger.warning("WeChat: no context_token for {}, cannot reply", to)
             return
 
-        try:
-            await send_message(
-                base_url=self._account.base_url,
-                token=self._account.token,
-                to_user_id=to,
-                text=text,
-                context_token=ctx_token,
-            )
-            logger.debug("WeChat: sent to {}", to)
-        except Exception as e:
-            logger.error("WeChat: send failed to {}: {}", to, e)
+        text = _strip_markdown(msg.content.strip()) if msg.content else ""
+
+        # Send media files if present
+        if msg.media:
+            for file_path in msg.media:
+                try:
+                    await self._send_media_file(file_path, to, ctx_token, text)
+                    text = ""  # caption only on the first media
+                except Exception as e:
+                    logger.error("WeChat: media send failed {}: {}", file_path, e)
+
+        # Send remaining text (or standalone text if no media)
+        if text:
+            try:
+                await send_message(
+                    base_url=self._account.base_url,
+                    token=self._account.token,
+                    to_user_id=to,
+                    text=text,
+                    context_token=ctx_token,
+                )
+                logger.debug("WeChat: text sent to {}", to)
+            except Exception as e:
+                logger.error("WeChat: send failed to {}: {}", to, e)
+
+    async def _send_media_file(
+        self, file_path: str, to: str, ctx_token: str, caption: str
+    ) -> None:
+        """Upload a local file to CDN and send as a media message."""
+        import mimetypes
+        from base64 import b64encode as _b64
+
+        mime, _ = mimetypes.guess_type(file_path)
+        mime = mime or "application/octet-stream"
+
+        if mime.startswith("image/"):
+            media_type = 1  # IMAGE
+        elif mime.startswith("video/"):
+            media_type = 2  # VIDEO
+        else:
+            media_type = 3  # FILE
+
+        cdn_base = (
+            self._cfg.get("cdnBaseUrl", CDN_BASE_URL) if self._cfg else CDN_BASE_URL
+        )
+        uploaded = await upload_cdn_file(
+            base_url=self._account.base_url,
+            token=self._account.token,
+            cdn_base_url=cdn_base,
+            file_path=file_path,
+            to_user_id=to,
+            media_type=media_type,
+        )
+
+        # aes_key in message: base64 of the hex string (matches upstream protocol)
+        aes_key_b64 = _b64(uploaded["aeskey"].encode()).decode()
+        media_ref = {
+            "encrypt_query_param": uploaded["download_param"],
+            "aes_key": aes_key_b64,
+            "encrypt_type": 1,
+        }
+
+        if media_type == 1:
+            item = {"type": 2, "image_item": {"media": media_ref, "mid_size": uploaded["filesize_cipher"]}}
+        elif media_type == 2:
+            item = {"type": 5, "video_item": {"media": media_ref, "video_size": uploaded["filesize_cipher"]}}
+        else:
+            fname = os.path.basename(file_path)
+            item = {"type": 4, "file_item": {"media": media_ref, "file_name": fname, "len": str(uploaded["filesize_raw"])}}
+
+        await send_media_message(
+            base_url=self._account.base_url,
+            token=self._account.token,
+            to_user_id=to,
+            context_token=ctx_token,
+            media_item=item,
+            text=caption,
+        )
+        logger.info("WeChat: media sent to {} type={} file={}", to, mime, file_path)
 
     # ── long-poll loop ───────────────────────────────────────────────────
 
     async def _poll_loop(self, account: AccountData) -> None:
         buf = load_sync_buf(account.account_id)
+        logger.info(
+            "WeChat: poll_loop starting, has_sync_buf={}",
+            bool(buf),
+        )
         failures = 0
 
         while self._running:
@@ -176,15 +251,40 @@ class WeixinChannel(BaseChannel):
                 errcode = resp.get("errcode", 0)
 
                 if ret != 0 or errcode != 0:
+                    errmsg = resp.get("errmsg", "")
                     if errcode == _SESSION_EXPIRED or ret == _SESSION_EXPIRED:
-                        logger.error("WeChat: session expired, pausing {}s", _SESSION_PAUSE_S)
+                        # Try clearing stale sync_buf first
+                        if buf:
+                            logger.warning("WeChat: session expired, clearing sync_buf and retrying...")
+                            buf = ""
+                            save_sync_buf(account.account_id, "")
+                            await asyncio.sleep(1)
+                            continue
+
+                        # Try reloading account from disk (user may have re-logged in)
+                        refreshed = get_default_account()
+                        if refreshed and refreshed.configured and refreshed.token != account.token:
+                            logger.info(
+                                "WeChat: detected new token on disk ({}...), hot-reloading",
+                                refreshed.token[:12],
+                            )
+                            account = refreshed
+                            self._account = refreshed
+                            buf = ""
+                            continue
+
+                        logger.error(
+                            "WeChat: session expired (ret={} errcode={} errmsg={}), "
+                            "pausing {}s. Re-login: nanobot-weixin login",
+                            ret, errcode, errmsg, _SESSION_PAUSE_S,
+                        )
                         await self._sleep(_SESSION_PAUSE_S)
                         failures = 0
                         continue
                     failures += 1
                     logger.warning(
-                        "WeChat: getUpdates error ret={} errcode={} ({}/{})",
-                        ret, errcode, failures, _MAX_FAILURES,
+                        "WeChat: getUpdates error ret={} errcode={} errmsg={} ({}/{})",
+                        ret, errcode, errmsg, failures, _MAX_FAILURES,
                     )
                     if failures >= _MAX_FAILURES:
                         failures = 0

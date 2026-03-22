@@ -6,6 +6,7 @@ import hashlib
 import secrets
 from base64 import b64encode
 from typing import Any
+from urllib.parse import quote
 
 import httpx
 from loguru import logger
@@ -86,11 +87,24 @@ async def get_updates(
     """Long-poll POST getupdates → {ret, msgs[], get_updates_buf}."""
     url = f"{_trailing(base_url)}ilink/bot/getupdates"
     body = {"get_updates_buf": get_updates_buf, "base_info": {}}
+    logger.debug(
+        "getUpdates: url={} token={}... buf_len={}",
+        url, token[:12] if token else "NONE", len(get_updates_buf),
+    )
     try:
         async with httpx.AsyncClient(timeout=timeout_s + 5) as c:
             r = await c.post(url, json=body, headers=_build_headers(token), timeout=timeout_s + 5)
             r.raise_for_status()
-            return r.json()
+            data = r.json()
+            ret = data.get("ret", 0)
+            errcode = data.get("errcode", 0)
+            msgs = data.get("msgs", [])
+            buf_len = len(data.get("get_updates_buf", ""))
+            logger.debug(
+                "getUpdates: ret={} errcode={} msgs={} buf_len={} errmsg={}",
+                ret, errcode, len(msgs), buf_len, data.get("errmsg", ""),
+            )
+            return data
     except httpx.ReadTimeout:
         logger.debug("getUpdates: client-side timeout, returning empty")
         return {"ret": 0, "msgs": [], "get_updates_buf": get_updates_buf}
@@ -133,30 +147,36 @@ async def send_media_message(
     media_item: dict[str, Any],
     text: str = "",
 ) -> str:
-    """Send a media message (image/video/file). Returns client_id."""
+    """Send a media message (image/video/file).
+
+    Matches upstream protocol: each item is sent as a separate API call.
+    If text is provided, it is sent first, then the media item.
+    """
     url = f"{_trailing(base_url)}ilink/bot/sendmessage"
     items: list[dict[str, Any]] = []
     if text:
         items.append({"type": 1, "text_item": {"text": text}})
     items.append(media_item)
 
-    cid = f"nanobot-{secrets.token_hex(8)}"
-    body = {
-        "msg": {
-            "from_user_id": "",
-            "to_user_id": to_user_id,
-            "client_id": cid,
-            "message_type": 2,
-            "message_state": 2,
-            "item_list": items,
-            "context_token": context_token,
-        },
-        "base_info": {},
-    }
-    async with httpx.AsyncClient(timeout=API_TIMEOUT_S) as c:
-        r = await c.post(url, json=body, headers=_build_headers(token))
-        r.raise_for_status()
-    return cid
+    last_cid = ""
+    for item in items:
+        last_cid = f"nanobot-{secrets.token_hex(8)}"
+        body = {
+            "msg": {
+                "from_user_id": "",
+                "to_user_id": to_user_id,
+                "client_id": last_cid,
+                "message_type": 2,
+                "message_state": 2,
+                "item_list": [item],
+                "context_token": context_token,
+            },
+            "base_info": {},
+        }
+        async with httpx.AsyncClient(timeout=API_TIMEOUT_S) as c:
+            r = await c.post(url, json=body, headers=_build_headers(token))
+            r.raise_for_status()
+    return last_cid
 
 
 # ── CDN helpers ──────────────────────────────────────────────────────────
@@ -170,14 +190,14 @@ async def download_cdn_media(
     """Download and AES-128-ECB decrypt a CDN file."""
     from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 
-    url = f"{cdn_base_url}?{encrypt_query_param}"
+    url = f"{cdn_base_url}/download?encrypted_query_param={quote(encrypt_query_param)}"
     async with httpx.AsyncClient(timeout=30, follow_redirects=True) as c:
         r = await c.get(url)
         r.raise_for_status()
         ciphertext = r.content
 
-    cipher = Cipher(algorithms.AES(bytes.fromhex(aes_key_hex)), modes.ECB())
-    plaintext = cipher.decryptor().update(ciphertext) + cipher.decryptor().finalize()
+    decryptor = Cipher(algorithms.AES(bytes.fromhex(aes_key_hex)), modes.ECB()).decryptor()
+    plaintext = decryptor.update(ciphertext) + decryptor.finalize()
 
     # PKCS7 unpad
     pad = plaintext[-1]
@@ -197,7 +217,8 @@ async def upload_cdn_file(
     """Encrypt + upload a local file to CDN. Returns metadata for building a media message."""
     from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 
-    raw_data = open(file_path, "rb").read()
+    with open(file_path, "rb") as f:
+        raw_data = f.read()
     rawsize = len(raw_data)
     raw_md5 = hashlib.md5(raw_data).hexdigest()
     aes_key = secrets.token_bytes(16)
@@ -205,8 +226,8 @@ async def upload_cdn_file(
     # PKCS7 pad + AES-128-ECB encrypt
     pad_len = 16 - (rawsize % 16)
     padded = raw_data + bytes([pad_len] * pad_len)
-    cipher = Cipher(algorithms.AES(aes_key), modes.ECB())
-    ciphertext = cipher.encryptor().update(padded) + cipher.encryptor().finalize()
+    encryptor = Cipher(algorithms.AES(aes_key), modes.ECB()).encryptor()
+    ciphertext = encryptor.update(padded) + encryptor.finalize()
 
     filekey = f"nanobot_{secrets.token_hex(8)}"
 
@@ -232,16 +253,22 @@ async def upload_cdn_file(
     if not upload_param:
         raise RuntimeError("getuploadurl returned empty upload_param")
 
-    # PUT ciphertext to CDN
-    cdn_url = f"{cdn_base_url}?{upload_param}"
+    cdn_url = f"{cdn_base_url}/upload?encrypted_query_param={quote(upload_param)}&filekey={quote(filekey)}"
     async with httpx.AsyncClient(timeout=60) as c:
-        r = await c.put(cdn_url, content=ciphertext, headers={"Content-Type": "application/octet-stream"})
-        r.raise_for_status()
+        r = await c.post(cdn_url, content=ciphertext, headers={"Content-Type": "application/octet-stream"})
+        if r.status_code >= 400:
+            err_msg = r.headers.get("x-error-message", r.text[:200])
+            raise RuntimeError(f"CDN upload failed {r.status_code}: {err_msg}")
+
+    download_param = r.headers.get("x-encrypted-param", "")
+    if not download_param:
+        raise RuntimeError("CDN response missing x-encrypted-param header")
 
     return {
         "filekey": filekey,
         "aeskey": aes_key.hex(),
-        "download_param": upload_param,
+        "download_param": download_param,
         "filesize_cipher": len(ciphertext),
         "filesize_raw": rawsize,
     }
+

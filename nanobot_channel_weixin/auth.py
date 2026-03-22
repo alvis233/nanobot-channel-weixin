@@ -61,10 +61,19 @@ def list_account_ids() -> list[str]:
 
 
 def _register_account_id(account_id: str) -> None:
-    ids = list_account_ids()
-    if account_id not in ids:
-        ids.append(account_id)
-        _index_path().write_text(json.dumps(ids, indent=2))
+    old_ids = list_account_ids()
+    # Remove stale account files from previous logins
+    for old_id in old_ids:
+        if old_id != account_id:
+            old_file = _account_path(old_id)
+            if old_file.exists():
+                old_file.unlink()
+                logger.debug("Removed stale account file: {}", old_id)
+            old_buf = _sync_dir() / f"{old_id}.buf"
+            if old_buf.exists():
+                old_buf.unlink()
+    # Only keep the current account
+    _index_path().write_text(json.dumps([account_id], indent=2))
 
 
 # ── Account data ─────────────────────────────────────────────────────────
@@ -121,15 +130,20 @@ def save_account(account_id: str, token: str, base_url: str, user_id: str = "") 
     except OSError:
         pass
     _register_account_id(account_id)
+    # Clear stale sync buf so new session starts fresh
+    buf_path = _sync_dir() / f"{account_id}.buf"
+    if buf_path.exists():
+        buf_path.unlink()
+        logger.info("Cleared stale sync buf for {}", account_id)
 
 
 def get_default_account() -> AccountData | None:
-    """Return the first configured account, or None."""
-    for aid in list_account_ids():
-        acct = load_account(aid)
-        if acct and acct.configured:
-            return acct
-    return None
+    """Return the current account (only one is kept after each login)."""
+    ids = list_account_ids()
+    if not ids:
+        return None
+    acct = load_account(ids[0])
+    return acct if acct and acct.configured else None
 
 
 # ── Sync buf persistence ─────────────────────────────────────────────────
@@ -201,8 +215,11 @@ async def login_with_qr(
                 return None
 
             aid = normalize_account_id(bot_id)
+            logger.info(
+                "WeChat login OK: bot_id={} account_id={} base_url={} token={}... user_id={}",
+                bot_id, aid, srv_url, bot_token[:12] if bot_token else "NONE", user_id,
+            )
             save_account(aid, bot_token, srv_url, user_id)
-            logger.info("WeChat login OK: account_id={}", aid)
             return load_account(aid)
 
         await asyncio.sleep(1)
