@@ -11,9 +11,18 @@ from nanobot_channel_weixin.api import DEFAULT_BASE_URL
 from nanobot_channel_weixin.auth import get_default_account, list_account_ids, load_account, login_with_qr
 
 
+def _resolve_config_path() -> Path:
+    """Return the nanobot config path, respecting multi-instance setup."""
+    try:
+        from nanobot.config.loader import get_config_path
+        return get_config_path()
+    except Exception:
+        return Path.home() / ".nanobot" / "config.json"
+
+
 def _load_base_url() -> str:
     """Read baseUrl from nanobot config if available."""
-    cfg_path = Path.home() / ".nanobot" / "config.json"
+    cfg_path = _resolve_config_path()
     if cfg_path.exists():
         try:
             cfg = json.loads(cfg_path.read_text())
@@ -25,7 +34,7 @@ def _load_base_url() -> str:
 
 def _enable_in_config() -> None:
     """Auto-set channels.weixin.enabled = true in config.json."""
-    cfg_path = Path.home() / ".nanobot" / "config.json"
+    cfg_path = _resolve_config_path()
     if not cfg_path.exists():
         return
     try:

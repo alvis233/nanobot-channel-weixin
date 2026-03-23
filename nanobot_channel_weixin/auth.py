@@ -20,7 +20,11 @@ _LOGIN_TIMEOUT_S = 480
 
 
 def _state_dir() -> Path:
-    d = Path.home() / ".nanobot" / "state" / "weixin"
+    try:
+        from nanobot.config.paths import get_runtime_subdir
+        d = get_runtime_subdir("state") / "weixin"
+    except Exception:
+        d = Path.home() / ".nanobot" / "state" / "weixin"
     d.mkdir(parents=True, exist_ok=True)
     return d
 
