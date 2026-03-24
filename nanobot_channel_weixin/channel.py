@@ -6,6 +6,7 @@ import asyncio
 import os
 import re
 import secrets
+import time
 from typing import Any
 
 from loguru import logger
@@ -17,10 +18,14 @@ from nanobot.channels.base import BaseChannel
 from nanobot_channel_weixin.api import (
     CDN_BASE_URL,
     DEFAULT_BASE_URL,
+    TYPING_STATUS_CANCEL,
+    TYPING_STATUS_TYPING,
     download_cdn_media,
+    get_config,
     get_updates,
     send_media_message,
     send_message,
+    send_typing,
     upload_cdn_file,
 )
 from nanobot_channel_weixin.auth import (
@@ -52,6 +57,8 @@ _MAX_FAILURES = 3
 _BACKOFF_S = 30
 _RETRY_S = 2
 _SESSION_PAUSE_S = 300
+_TYPING_KEEPALIVE_S = 5
+_CONFIG_CACHE_TTL_S = 24 * 3600
 
 
 def _strip_markdown(text: str) -> str:
@@ -114,6 +121,10 @@ class WeixinChannel(BaseChannel):
         self._cfg = config if isinstance(config, dict) else {}
         self._context_tokens: dict[str, str] = {}
         self._account: AccountData | None = None
+        # typing_ticket cache: {user_id: (ticket, fetched_at)}
+        self._typing_tickets: dict[str, tuple[str, float]] = {}
+        # active keepalive tasks: {user_id: asyncio.Task}
+        self._typing_tasks: dict[str, asyncio.Task] = {}  # type: ignore[type-arg]
 
     async def start(self) -> None:
         """Start the long-poll monitor (blocks forever)."""
@@ -144,6 +155,18 @@ class WeixinChannel(BaseChannel):
             return
 
         to = msg.chat_id
+
+        if msg.metadata.get("_progress"):
+            # Progress messages mean the agent is still working. Don't forward
+            # them to WeChat, but (re)start typing if it was previously stopped.
+            task = self._typing_tasks.get(to)
+            if not task or task.done():
+                ticket = self._typing_tickets.get(to, ("", 0))[0]
+                if ticket:
+                    self._start_typing(to, ticket)
+            return
+
+        self._stop_typing(to)
         ctx_token = self._context_tokens.get(to)
         if not ctx_token:
             logger.warning("WeChat: no context_token for {}, cannot reply", to)
@@ -228,6 +251,88 @@ class WeixinChannel(BaseChannel):
             text=caption,
         )
         logger.info("WeChat: media sent to {} type={} file={}", to, mime, file_path)
+
+    # ── typing indicator ──────────────────────────────────────────────────
+
+    async def _get_typing_ticket(self, user_id: str, context_token: str) -> str:
+        """Return a cached typing_ticket, refreshing from getconfig when stale."""
+        cached = self._typing_tickets.get(user_id)
+        if cached:
+            ticket, fetched_at = cached
+            if time.monotonic() - fetched_at < _CONFIG_CACHE_TTL_S:
+                return ticket
+
+        if not self._account or not self._account.configured:
+            return ""
+        try:
+            resp = await get_config(
+                base_url=self._account.base_url,
+                token=self._account.token,
+                ilink_user_id=user_id,
+                context_token=context_token,
+            )
+            if resp.get("ret", 0) == 0:
+                ticket = resp.get("typing_ticket", "")
+                self._typing_tickets[user_id] = (ticket, time.monotonic())
+                logger.debug("WeChat: typing_ticket cached for {}", user_id)
+                return ticket
+        except Exception as e:
+            logger.debug("WeChat: getconfig failed for {}: {}", user_id, e)
+        return self._typing_tickets.get(user_id, ("", 0))[0]
+
+    async def _typing_keepalive(self, user_id: str, ticket: str) -> None:
+        """Send TYPING immediately then repeat every _TYPING_KEEPALIVE_S until cancelled."""
+        if not self._account or not ticket:
+            return
+        try:
+            await send_typing(
+                self._account.base_url, self._account.token,
+                user_id, ticket, TYPING_STATUS_TYPING,
+            )
+            while True:
+                await asyncio.sleep(_TYPING_KEEPALIVE_S)
+                await send_typing(
+                    self._account.base_url, self._account.token,
+                    user_id, ticket, TYPING_STATUS_TYPING,
+                )
+        except asyncio.CancelledError:
+            return
+        except Exception as e:
+            logger.debug("WeChat: typing keepalive error for {}: {}", user_id, e)
+
+    def _start_typing(self, user_id: str, ticket: str) -> None:
+        """Start the typing indicator for a user (cancels any previous one)."""
+        self._stop_typing_silent(user_id)
+        if ticket:
+            self._typing_tasks[user_id] = asyncio.create_task(
+                self._typing_keepalive(user_id, ticket)
+            )
+
+    def _stop_typing_silent(self, user_id: str) -> bool:
+        """Cancel the keepalive task without sending CANCEL. Returns True if was active."""
+        task = self._typing_tasks.pop(user_id, None)
+        if task and not task.done():
+            task.cancel()
+            return True
+        return False
+
+    def _stop_typing(self, user_id: str) -> None:
+        """Cancel the keepalive task and send CANCEL to the server (only if was active)."""
+        if not self._stop_typing_silent(user_id):
+            return
+        if self._account and self._account.configured:
+            ticket = self._typing_tickets.get(user_id, ("", 0))[0]
+            if ticket:
+                asyncio.create_task(self._send_typing_cancel(user_id, ticket))
+
+    async def _send_typing_cancel(self, user_id: str, ticket: str) -> None:
+        try:
+            await send_typing(
+                self._account.base_url, self._account.token,
+                user_id, ticket, TYPING_STATUS_CANCEL,
+            )
+        except Exception as e:
+            logger.debug("WeChat: typing cancel error for {}: {}", user_id, e)
 
     # ── long-poll loop ───────────────────────────────────────────────────
 
@@ -385,6 +490,9 @@ class WeixinChannel(BaseChannel):
         if not content:
             return
 
+        ticket = await self._get_typing_ticket(from_user, ctx_token)
+        self._start_typing(from_user, ticket)
+
         await self._handle_message(
             sender_id=from_user,
             chat_id=from_user,
@@ -437,3 +545,4 @@ class WeixinChannel(BaseChannel):
         except Exception as e:
             logger.error("WeChat: media download failed: {}", e)
             return None
+

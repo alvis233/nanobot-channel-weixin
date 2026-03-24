@@ -16,6 +16,7 @@ CDN_BASE_URL = "https://novac2c.cdn.weixin.qq.com/c2c"
 
 LONG_POLL_TIMEOUT_S = 35
 API_TIMEOUT_S = 15
+CONFIG_TIMEOUT_S = 10
 
 
 def _random_wechat_uin() -> str:
@@ -179,6 +180,51 @@ async def send_media_message(
     return last_cid
 
 
+# ── Typing indicator ─────────────────────────────────────────────────────
+
+TYPING_STATUS_TYPING = 1
+TYPING_STATUS_CANCEL = 2
+
+
+async def get_config(
+    base_url: str,
+    token: str,
+    ilink_user_id: str,
+    context_token: str = "",
+) -> dict[str, Any]:
+    """POST ilink/bot/getconfig → {ret, typing_ticket, ...}."""
+    url = f"{_trailing(base_url)}ilink/bot/getconfig"
+    body = {
+        "ilink_user_id": ilink_user_id,
+        "context_token": context_token,
+        "base_info": {},
+    }
+    async with httpx.AsyncClient(timeout=CONFIG_TIMEOUT_S) as c:
+        r = await c.post(url, json=body, headers=_build_headers(token))
+        r.raise_for_status()
+        return r.json()
+
+
+async def send_typing(
+    base_url: str,
+    token: str,
+    ilink_user_id: str,
+    typing_ticket: str,
+    status: int = TYPING_STATUS_TYPING,
+) -> None:
+    """POST ilink/bot/sendtyping to show/cancel 'typing' indicator."""
+    url = f"{_trailing(base_url)}ilink/bot/sendtyping"
+    body = {
+        "ilink_user_id": ilink_user_id,
+        "typing_ticket": typing_ticket,
+        "status": status,
+        "base_info": {},
+    }
+    async with httpx.AsyncClient(timeout=CONFIG_TIMEOUT_S) as c:
+        r = await c.post(url, json=body, headers=_build_headers(token))
+        r.raise_for_status()
+
+
 # ── CDN helpers ──────────────────────────────────────────────────────────
 
 
@@ -271,4 +317,5 @@ async def upload_cdn_file(
         "filesize_cipher": len(ciphertext),
         "filesize_raw": rawsize,
     }
+
 
