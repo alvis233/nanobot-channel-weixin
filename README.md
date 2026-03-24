@@ -8,6 +8,37 @@ Personal WeChat (微信) channel plugin for [nanobot](https://github.com/HKUDS/n
 
 ---
 
+## Important Notice / 重要通知
+
+**EN:**🎉 **Great news!** The official `nanobot` framework now natively supports the personal WeChat channel. You can directly use the built-in feature, and **this plugin is no longer required!**
+
+As an early community exploration and my very first open-source learning project, it has successfully fulfilled its "historical mission"!
+
+I may still tinker with this and make small updates out of personal interest when I have free time. More importantly, **this repository will remain open permanently**. If you happen to be interested in developing `nanobot` plugins, I hope the source code here can serve as a solid reference and provide you with some inspiration and help!
+
+
+**CN:**🎉 **好消息！** `nanobot` 官方现已原生支持个人微信 Channel，大家可以直接使用框架自带的原生功能，**无需再额外安装此插件啦！**
+
+本项目作为早期的社区探索方案，以及我的首个开源学习项目，也算是圆满完成了它的“历史使命”！
+
+未来在业余时间充裕的情况下，我可能还会出于兴趣做一些小更新。更重要的是，**这个仓库将永久保留**。如果你恰好对开发 `nanobot` 插件感兴趣，希望这里的源码能作为一个不错的参考案例，为你提供一些灵感和帮助！
+
+### Uninstallation / 卸载说明
+
+If you have installed this plugin previously, it is highly recommended to uninstall it to avoid any conflicts with the official native features: 
+
+```
+uv pip uninstall nanobot-channel-weixin --python ~/.local/share/uv/tools/nanobot-ai/bin/python
+```
+
+or
+
+```
+pip uninstall nanobot-channel-weixin
+```
+
+---
+
 ## Disclaimer / 免责声明
 
 **EN:** This plugin is a Python re-implementation based on protocol analysis of the official npm package [`@tencent-weixin/openclaw-weixin`](https://www.npmjs.com/package/@tencent-weixin/openclaw-weixin). It communicates with the same [iLink Bot API](https://ilinkai.weixin.qq.com) backend but is built entirely from scratch for the nanobot ecosystem — no original source code was copied. This project is for educational, research, and personal use only. It is not affiliated with or endorsed by Tencent or WeChat.
