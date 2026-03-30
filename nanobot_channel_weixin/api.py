@@ -18,6 +18,12 @@ LONG_POLL_TIMEOUT_S = 35
 API_TIMEOUT_S = 15
 CONFIG_TIMEOUT_S = 10
 
+CHANNEL_VERSION = "2.1.1"
+ILINK_APP_ID = "bot"
+# iLink-App-ClientVersion: uint32 encoded as 0x00MMNNPP from semver
+_ver = tuple(int(x) for x in CHANNEL_VERSION.split("."))
+ILINK_APP_CLIENT_VERSION = str((_ver[0] << 16) | (_ver[1] << 8) | _ver[2])
+
 
 def _random_wechat_uin() -> str:
     """X-WECHAT-UIN header: random uint32 → decimal → base64."""
@@ -30,10 +36,16 @@ def _build_headers(token: str | None = None) -> dict[str, str]:
         "Content-Type": "application/json",
         "AuthorizationType": "ilink_bot_token",
         "X-WECHAT-UIN": _random_wechat_uin(),
+        "iLink-App-Id": ILINK_APP_ID,
+        "iLink-App-ClientVersion": ILINK_APP_CLIENT_VERSION,
     }
     if token:
         headers["Authorization"] = f"Bearer {token}"
     return headers
+
+
+def _build_base_info() -> dict[str, str]:
+    return {"channel_version": CHANNEL_VERSION}
 
 
 def _trailing(url: str) -> str:
@@ -87,7 +99,7 @@ async def get_updates(
 ) -> dict[str, Any]:
     """Long-poll POST getupdates → {ret, msgs[], get_updates_buf}."""
     url = f"{_trailing(base_url)}ilink/bot/getupdates"
-    body = {"get_updates_buf": get_updates_buf, "base_info": {}}
+    body = {"get_updates_buf": get_updates_buf, "base_info": _build_base_info()}
     logger.debug(
         "getUpdates: url={} token={}... buf_len={}",
         url, token[:12] if token else "NONE", len(get_updates_buf),
@@ -132,7 +144,7 @@ async def send_message(
             "item_list": [{"type": 1, "text_item": {"text": text}}],
             "context_token": context_token,
         },
-        "base_info": {},
+        "base_info": _build_base_info(),
     }
     async with httpx.AsyncClient(timeout=API_TIMEOUT_S) as c:
         r = await c.post(url, json=body, headers=_build_headers(token))
@@ -172,7 +184,7 @@ async def send_media_message(
                 "item_list": [item],
                 "context_token": context_token,
             },
-            "base_info": {},
+            "base_info": _build_base_info(),
         }
         async with httpx.AsyncClient(timeout=API_TIMEOUT_S) as c:
             r = await c.post(url, json=body, headers=_build_headers(token))
@@ -197,7 +209,7 @@ async def get_config(
     body = {
         "ilink_user_id": ilink_user_id,
         "context_token": context_token,
-        "base_info": {},
+        "base_info": _build_base_info(),
     }
     async with httpx.AsyncClient(timeout=CONFIG_TIMEOUT_S) as c:
         r = await c.post(url, json=body, headers=_build_headers(token))
@@ -218,7 +230,7 @@ async def send_typing(
         "ilink_user_id": ilink_user_id,
         "typing_ticket": typing_ticket,
         "status": status,
-        "base_info": {},
+        "base_info": _build_base_info(),
     }
     async with httpx.AsyncClient(timeout=CONFIG_TIMEOUT_S) as c:
         r = await c.post(url, json=body, headers=_build_headers(token))
@@ -228,19 +240,66 @@ async def send_typing(
 # ── CDN helpers ──────────────────────────────────────────────────────────
 
 
+def _build_cdn_download_url(cdn_base_url: str, encrypt_query_param: str) -> str:
+    """Construct CDN download URL with properly URL-encoded query param."""
+    return f"{cdn_base_url}/download?encrypted_query_param={quote(encrypt_query_param, safe='')}"
+
+
+async def _fetch_cdn_bytes(
+    cdn_base_url: str,
+    encrypt_query_param: str,
+    full_url: str | None = None,
+) -> bytes:
+    """Download raw bytes from CDN, trying full_url first then constructed URL as fallback."""
+    constructed_url = _build_cdn_download_url(cdn_base_url, encrypt_query_param) if encrypt_query_param else ""
+
+    # Try full_url first (server-returned), fall back to constructed URL.
+    urls: list[str] = []
+    if full_url:
+        urls.append(full_url)
+    if constructed_url and constructed_url != full_url:
+        urls.append(constructed_url)
+    if not urls:
+        raise RuntimeError("CDN download: no URL available (neither full_url nor encrypt_query_param)")
+
+    last_err: Exception | None = None
+    for url in urls:
+        try:
+            logger.debug("CDN download: trying url={}", url[:120])
+            async with httpx.AsyncClient(timeout=30, follow_redirects=True) as c:
+                r = await c.get(url, headers={
+                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+                })
+                if not r.is_success:
+                    body_preview = r.text[:200] if r.content else ""
+                    logger.warning(
+                        "CDN download: HTTP {} for url={} body={}",
+                        r.status_code, url[:120], body_preview,
+                    )
+                    r.raise_for_status()
+                return r.content
+        except Exception as e:
+            last_err = e
+            logger.debug("CDN download: failed url={} err={}", url[:120], e)
+            if len(urls) > 1:
+                continue
+    raise last_err or RuntimeError("CDN download: all URLs failed")
+
+
 async def download_cdn_media(
     cdn_base_url: str,
     encrypt_query_param: str,
     aes_key_hex: str,
+    full_url: str | None = None,
 ) -> bytes:
-    """Download and AES-128-ECB decrypt a CDN file."""
+    """Download and AES-128-ECB decrypt a CDN file.
+
+    Tries *full_url* first (server-returned complete download URL), falls back
+    to constructing the URL from *encrypt_query_param* + *cdn_base_url*.
+    """
     from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 
-    url = f"{cdn_base_url}/download?encrypted_query_param={quote(encrypt_query_param)}"
-    async with httpx.AsyncClient(timeout=30, follow_redirects=True) as c:
-        r = await c.get(url)
-        r.raise_for_status()
-        ciphertext = r.content
+    ciphertext = await _fetch_cdn_bytes(cdn_base_url, encrypt_query_param, full_url)
 
     decryptor = Cipher(algorithms.AES(bytes.fromhex(aes_key_hex)), modes.ECB()).decryptor()
     plaintext = decryptor.update(ciphertext) + decryptor.finalize()
@@ -250,6 +309,15 @@ async def download_cdn_media(
     if 1 <= pad <= 16 and all(b == pad for b in plaintext[-pad:]):
         plaintext = plaintext[:-pad]
     return plaintext
+
+
+async def download_cdn_media_plain(
+    cdn_base_url: str,
+    encrypt_query_param: str,
+    full_url: str | None = None,
+) -> bytes:
+    """Download raw bytes from CDN without decryption (for unencrypted media)."""
+    return await _fetch_cdn_bytes(cdn_base_url, encrypt_query_param, full_url)
 
 
 async def upload_cdn_file(
@@ -288,27 +356,53 @@ async def upload_cdn_file(
         "filesize": len(ciphertext),
         "aeskey": aes_key.hex(),
         "no_need_thumb": True,
-        "base_info": {},
+        "base_info": _build_base_info(),
     }
     async with httpx.AsyncClient(timeout=API_TIMEOUT_S) as c:
         r = await c.post(upload_url, json=upload_body, headers=_build_headers(token))
         r.raise_for_status()
         upload_resp = r.json()
 
-    upload_param = upload_resp.get("upload_param", "")
-    if not upload_param:
-        raise RuntimeError("getuploadurl returned empty upload_param")
+    upload_full_url = (upload_resp.get("upload_full_url") or "").strip()
+    upload_param = upload_resp.get("upload_param") or ""
+    if not upload_full_url and not upload_param:
+        raise RuntimeError(
+            f"getuploadurl returned no upload URL (need upload_full_url or upload_param), "
+            f"resp={upload_resp}"
+        )
 
-    cdn_url = f"{cdn_base_url}/upload?encrypted_query_param={quote(upload_param)}&filekey={quote(filekey)}"
-    async with httpx.AsyncClient(timeout=60) as c:
-        r = await c.post(cdn_url, content=ciphertext, headers={"Content-Type": "application/octet-stream"})
-        if r.status_code >= 400:
-            err_msg = r.headers.get("x-error-message", r.text[:200])
-            raise RuntimeError(f"CDN upload failed {r.status_code}: {err_msg}")
+    if upload_full_url:
+        cdn_url = upload_full_url
+    else:
+        cdn_url = f"{cdn_base_url}/upload?encrypted_query_param={quote(upload_param)}&filekey={quote(filekey)}"
 
-    download_param = r.headers.get("x-encrypted-param", "")
+    download_param = ""
+    max_retries = 3
+    last_error: Exception | None = None
+    for attempt in range(1, max_retries + 1):
+        try:
+            async with httpx.AsyncClient(timeout=60) as c:
+                r = await c.post(cdn_url, content=ciphertext, headers={"Content-Type": "application/octet-stream"})
+                if 400 <= r.status_code < 500:
+                    err_msg = r.headers.get("x-error-message", r.text[:200])
+                    raise RuntimeError(f"CDN upload client error {r.status_code}: {err_msg}")
+                if r.status_code != 200:
+                    err_msg = r.headers.get("x-error-message", f"status {r.status_code}")
+                    raise RuntimeError(f"CDN upload server error: {err_msg}")
+                download_param = r.headers.get("x-encrypted-param", "")
+                if not download_param:
+                    raise RuntimeError("CDN response missing x-encrypted-param header")
+                break
+        except RuntimeError as e:
+            last_error = e
+            if "client error" in str(e):
+                raise
+            if attempt < max_retries:
+                logger.warning("CDN upload attempt {}/{} failed, retrying: {}", attempt, max_retries, e)
+            else:
+                logger.error("CDN upload all {} attempts failed: {}", max_retries, e)
     if not download_param:
-        raise RuntimeError("CDN response missing x-encrypted-param header")
+        raise last_error or RuntimeError(f"CDN upload failed after {max_retries} attempts")
 
     return {
         "filekey": filekey,
