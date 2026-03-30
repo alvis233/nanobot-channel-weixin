@@ -8,42 +8,34 @@ Personal WeChat (微信) channel plugin for [nanobot](https://github.com/HKUDS/n
 
 ---
 
+## Latest Updates / 最新动态
+
+- **EN**: Supporting multiple accounts, per-account conversation isolation, and user ID matched re-login migration. We've also resolved image upload/download issues caused by changes on the official WeChat side. The plugin has been renamed to `weixin-community` to prevent any naming conflicts with the official `weixin` plugin.
+- **CN**: 支持多账号登录、账号间对话隔离以及基于用户 ID 匹配的重登录迁移。同时，修复了因微信官方变动导致的图片上传与下载失败问题。插件已更名为 `weixin-community`，以避免与官方原生 `weixin` 插件产生命名冲突。
+
+> [!NOTE]
+> **EN**: While multiple WeChat accounts can be bound, `nanobot` currently uses a shared history file for memory. As a result, conversation isolation across multiple accounts may be imperfect when the LLM reads historical context.
+> **CN**: 尽管支持绑定多个微信账号，但由于 `nanobot` 目前使用公共历史文件记录对话，大语言模型在读取历史背景时可能无法实现完美的账号间隔离。
+
+---
+
 ## Important Notice / 重要通知
 
-**EN:**🎉 **Great news!** The official `nanobot` framework now natively supports the personal WeChat channel. You can directly use the built-in feature, and **this plugin is no longer required!**
+**EN:** 🎉 **Good news!** The official `nanobot` framework now natively supports the personal WeChat channel. Our community version has been renamed to `weixin-community` to coexist perfectly with the official one. You can choose to use either or both!
 
-As an early community exploration and my very first open-source learning project, it has successfully fulfilled its "historical mission"!
+I will continue to maintain and update this plugin in my spare time. This repository remains a permanent part of the `nanobot` ecosystem, serving as a reference for plugin development.
 
-I may still tinker with this and make small updates out of personal interest when I have free time. More importantly, **this repository will remain open permanently**. If you happen to be interested in developing `nanobot` plugins, I hope the source code here can serve as a solid reference and provide you with some inspiration and help!
+**CN:** 🎉 **好消息！** `nanobot` 官方现已原生支持个人微信 Channel。为了完美兼容，本项目已更名为 `weixin-community`，可以与官方版本共存。你可以根据需要选择使用，或者两者并用！
 
-
-**CN:**🎉 **好消息！** `nanobot` 官方现已原生支持个人微信 Channel，大家可以直接使用框架自带的原生功能，**无需再额外安装此插件啦！**
-
-本项目作为早期的社区探索方案，以及我的首个开源学习项目，也算是圆满完成了它的“历史使命”！
-
-未来在业余时间充裕的情况下，我可能还会出于兴趣做一些小更新。更重要的是，**这个仓库将永久保留**。如果你恰好对开发 `nanobot` 插件感兴趣，希望这里的源码能作为一个不错的参考案例，为你提供一些灵感和帮助！
-
-### Uninstallation / 卸载说明
-
-If you have installed this plugin previously, it is highly recommended to uninstall it to avoid any conflicts with the official native features: 
-
-```
-uv pip uninstall nanobot-channel-weixin --python ~/.local/share/uv/tools/nanobot-ai/bin/python
-```
-
-or
-
-```
-pip uninstall nanobot-channel-weixin
-```
+我依然会在业余时间持续维护和更新本插件。这个仓库将永久保留，作为 `nanobot` 插件开发的一个参考案例，欢迎大家交流学习。
 
 ---
 
 ## Disclaimer / 免责声明
 
-**EN:** This plugin is a Python re-implementation based on protocol analysis of the official npm package [`@tencent-weixin/openclaw-weixin`](https://www.npmjs.com/package/@tencent-weixin/openclaw-weixin). It communicates with the same [iLink Bot API](https://ilinkai.weixin.qq.com) backend but is built entirely from scratch for the nanobot ecosystem — no original source code was copied. This project is for educational, research, and personal use only. It is not affiliated with or endorsed by Tencent or WeChat.
+**EN:** This plugin is a Python implementation based on official documentation and the public npm package [`@tencent-weixin/openclaw-weixin`](https://www.npmjs.com/package/@tencent-weixin/openclaw-weixin). It communicates with the [iLink Bot API](https://ilinkai.weixin.qq.com) and is built from scratch for the nanobot ecosystem. This project is for educational, research, and personal use only. It is not affiliated with or endorsed by Tencent or WeChat.
 
-**CN:** 本插件基于对官方 npm 包 [`@tencent-weixin/openclaw-weixin`](https://www.npmjs.com/package/@tencent-weixin/openclaw-weixin) 的协议分析，使用 Python 从零重新实现。它使用相同的 [iLink Bot API](https://ilinkai.weixin.qq.com) 后端，但完全为 nanobot 生态独立编写，未复制任何原始源码。本项目仅供学习、研究和个人使用，与腾讯或微信官方无关，亦未获其背书。
+**CN:** 本插件参考官方文档及公开的 npm 包 [`@tencent-weixin/openclaw-weixin`](https://www.npmjs.com/package/@tencent-weixin/openclaw-weixin) 进行了 Python 适配开发。它通过 [iLink Bot API](https://ilinkai.weixin.qq.com) 进行通信，完全为 nanobot 生态独立编写。本项目仅供学习、研究和个人使用，与腾讯或微信官方无关，亦未获其背书。
 
 ---
 
@@ -104,7 +96,7 @@ nanobot plugins list
 You should see: / 你应该看到：
 
 ```
-│ WeChat   │ plugin  │ no      │
+│ WeChat (Community)  │ plugin  │ no      │
 ```
 
 ### 2. Login with QR code / 扫码登录
@@ -117,9 +109,9 @@ You should see: / 你应该看到：
 nanobot-weixin login
 ```
 
-Scan the QR code with your WeChat app to bind your account. Credentials are saved to `~/.nanobot/state/weixin/`.
+Scan the QR code with your WeChat app to bind your account. Credentials are saved to `~/.nanobot/state/weixin-community/`.
 
-用微信扫描终端中的二维码完成绑定，凭证自动保存到 `~/.nanobot/state/weixin/`。
+用微信扫描终端中的二维码完成绑定，凭证自动保存到 `~/.nanobot/state/weixin-community/`。
 
 ### 3. Configure / 配置
 
@@ -130,7 +122,7 @@ The login command auto-enables the channel in `~/.nanobot/config.json`. You can 
 ```json
 {
   "channels": {
-    "weixin": {
+    "weixin-community": {
       "enabled": true,
       "allowFrom": ["*"]
     }
@@ -149,6 +141,30 @@ Now send a message to your WeChat bot — nanobot will reply!
 现在通过微信给机器人发消息，nanobot 就会回复！
 
 <img src="example.jpg" alt="Chat Demo" width="400">
+
+---
+
+## Multiple Accounts / 多账户
+
+Each `nanobot-weixin login` adds a new account entry. All accounts run concurrently.
+
+每次执行 `nanobot-weixin login` 都会添加一个新的账号条目，所有账号并行运行。
+
+```bash
+nanobot-weixin login     # scan with WeChat account A
+nanobot-weixin login     # scan with WeChat account B
+nanobot-weixin status    # show all configured accounts
+```
+
+Each (account + peer user) pair has its own isolated AI conversation context — accounts never interfere with each other.
+
+每个「微信账号 + 发消息用户」组合拥有独立的 AI 对话上下文，账号之间不会串台。
+
+To remove an account: / 移除一个账户：
+
+```bash
+nanobot-weixin remove <account_id>
+```
 
 ---
 

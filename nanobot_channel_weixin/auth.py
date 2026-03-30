@@ -20,7 +20,11 @@ _LOGIN_TIMEOUT_S = 480
 
 
 def _state_dir() -> Path:
-    d = Path.home() / ".nanobot" / "state" / "weixin"
+    try:
+        from nanobot.config.paths import get_runtime_subdir
+        d = get_runtime_subdir("state") / "weixin-community"
+    except Exception:
+        d = Path.home() / ".nanobot" / "state" / "weixin-community"
     d.mkdir(parents=True, exist_ok=True)
     return d
 
@@ -61,19 +65,11 @@ def list_account_ids() -> list[str]:
 
 
 def _register_account_id(account_id: str) -> None:
-    old_ids = list_account_ids()
-    # Remove stale account files from previous logins
-    for old_id in old_ids:
-        if old_id != account_id:
-            old_file = _account_path(old_id)
-            if old_file.exists():
-                old_file.unlink()
-                logger.debug("Removed stale account file: {}", old_id)
-            old_buf = _sync_dir() / f"{old_id}.buf"
-            if old_buf.exists():
-                old_buf.unlink()
-    # Only keep the current account
-    _index_path().write_text(json.dumps([account_id], indent=2))
+    ids = list_account_ids()
+    if account_id in ids:
+        return
+    ids.append(account_id)
+    _index_path().write_text(json.dumps(ids, indent=2))
 
 
 # ── Account data ─────────────────────────────────────────────────────────
@@ -120,6 +116,17 @@ def load_account(account_id: str) -> AccountData | None:
 
 
 def save_account(account_id: str, token: str, base_url: str, user_id: str = "") -> None:
+    # If the same WeChat user re-logged and got a new bot_id,
+    # clean up stale entries that share the same user_id.
+    if user_id:
+        for old_id in list_account_ids():
+            if old_id == account_id:
+                continue
+            old_acct = load_account(old_id)
+            if old_acct and old_acct.user_id == user_id:
+                remove_account(old_id)
+                logger.info("Replaced stale account {} (same user_id={})", old_id, user_id)
+
     p = _account_path(account_id)
     data: dict[str, str] = {"token": token, "baseUrl": base_url}
     if user_id:
@@ -130,7 +137,6 @@ def save_account(account_id: str, token: str, base_url: str, user_id: str = "") 
     except OSError:
         pass
     _register_account_id(account_id)
-    # Clear stale sync buf so new session starts fresh
     buf_path = _sync_dir() / f"{account_id}.buf"
     if buf_path.exists():
         buf_path.unlink()
@@ -138,12 +144,40 @@ def save_account(account_id: str, token: str, base_url: str, user_id: str = "") 
 
 
 def get_default_account() -> AccountData | None:
-    """Return the current account (only one is kept after each login)."""
+    """Return the first configured account."""
     ids = list_account_ids()
     if not ids:
         return None
     acct = load_account(ids[0])
     return acct if acct and acct.configured else None
+
+
+def load_all_accounts() -> list[AccountData]:
+    """Return all configured accounts."""
+    result: list[AccountData] = []
+    for aid in list_account_ids():
+        acct = load_account(aid)
+        if acct and acct.configured:
+            result.append(acct)
+    return result
+
+
+def remove_account(account_id: str) -> bool:
+    """Remove an account and its sync buf. Returns True if found."""
+    p = _account_path(account_id)
+    removed = False
+    if p.exists():
+        p.unlink()
+        removed = True
+    buf = _sync_dir() / f"{account_id}.buf"
+    if buf.exists():
+        buf.unlink()
+    ids = list_account_ids()
+    if account_id in ids:
+        ids.remove(account_id)
+        _index_path().write_text(json.dumps(ids, indent=2))
+        removed = True
+    return removed
 
 
 # ── Sync buf persistence ─────────────────────────────────────────────────
