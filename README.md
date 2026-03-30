@@ -14,8 +14,8 @@ Personal WeChat (微信) channel plugin for [nanobot](https://github.com/HKUDS/n
 - **CN**: 支持多账号登录、账号间对话隔离以及基于用户 ID 匹配的重登录迁移。同时，修复了因微信官方变动导致的图片上传与下载失败问题。插件已更名为 `weixin-community`，以避免与官方原生 `weixin` 插件产生命名冲突。
 
 > [!NOTE]
-> **EN**: While multiple WeChat accounts can be bound, `nanobot` currently uses a shared history file for memory. As a result, conversation isolation across multiple accounts may be imperfect when the LLM reads historical context.
-> **CN**: 尽管支持绑定多个微信账号，但由于 `nanobot` 目前使用公共历史文件记录对话，大语言模型在读取历史背景时可能无法实现完美的账号间隔离。
+> **EN**: While multiple WeChat accounts can be bound, `nanobot` currently uses a shared history file for memory. As a result, conversation isolation across multiple accounts may be imperfect when the LLM reads historical context. Additionally, image downloads may intermittently return 500 errors; this appears to be a server-side instability beyond the plugin's control.
+> **CN**: 尽管支持绑定多个微信账号，但由于 `nanobot` 目前使用公共历史文件记录对话，大语言模型在读取背景时可能无法实现完美的账号间隔离。此外，由于服务器端可能存在处理延迟或不稳定性，图片下载有时会随机出现 500 错误，这并非插件本身的问题。
 
 ---
 
